@@ -1,8 +1,10 @@
 """
-Simple Gradio app to generate fashion silhouettes using the trained DCGAN generator.
+Gradio app for fashion silhouette generation with latent-space exploration.
+Supports morphing, complexity control, and generating 1–16 silhouettes in a grid.
 Run from the fashion-gan directory: python app.py
 """
 
+import cv2
 import numpy as np
 
 import gradio as gr
@@ -10,48 +12,118 @@ import gradio as gr
 from utils import generate_silhouette
 
 
-def generate_image(seed: int | None) -> np.ndarray:
+def generate_image(
+    seed: int | None = None,
+    seed_b: int | None = None,
+    alpha: float | None = None,
+    scale: float = 1.0,
+) -> np.ndarray:
     """
-    Generate one silhouette from the trained generator.
-    Returns a 28x28 grayscale image as numpy array in [0, 255] for display.
+    Generate one silhouette and return it as 256x256 numpy for display.
+    After converting from tensor to [0,255], resize with INTER_NEAREST so silhouettes stay sharp.
     """
-    img = generate_silhouette(seed=seed)
-    # (1, 1, 28, 28), range [-1, 1] -> (28, 28), range [0, 255]
-    img = img.squeeze().cpu().numpy()
-    img = (img * 0.5 + 0.5) * 255
-    return np.clip(img, 0, 255).astype(np.uint8)
+    img_tensor = generate_silhouette(
+        seed=seed,
+        seed_b=seed_b,
+        alpha=alpha,
+        scale=scale,
+    )
+    if hasattr(img_tensor, "cpu"):
+        img_tensor = img_tensor.squeeze().cpu().numpy()
+    img = (img_tensor * 0.5 + 0.5) * 255
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    img = cv2.resize(img, (256, 256), interpolation=cv2.INTER_NEAREST)
+    return img
 
 
-with gr.Blocks(title="Fashion Silhouette Generator", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# Fashion Silhouette Generator")
-    gr.Markdown("Generate new fashion silhouettes using the trained DCGAN. Click **Generate** for a random sample, or set a seed for reproducibility.")
+def run_generate(
+    seed: int | float | None,
+    morph: float,
+    complexity: float,
+    num_images: int | float,
+) -> list[np.ndarray]:
+    """
+    Generate num_images (1–16) silhouettes. Each image i uses seed_a=seed+i, seed_b=seed+i+1
+    with the same morph and complexity. Returns list of 256x256 images for the gallery.
+    """
+    seed = int(seed) if seed is not None else 0
+    num_images = int(num_images)
+    num_images = max(1, min(num_images, 16))
 
-    with gr.Row():
-        seed_input = gr.Number(
-            value=None,
-            label="Seed (optional)",
-            placeholder="Leave empty for random",
-            precision=0,
+    images = []
+    for i in range(num_images):
+        current_seed = seed + i
+        seed_b = current_seed + 1
+        img = generate_image(
+            seed=current_seed,
+            seed_b=seed_b,
+            alpha=morph,
+            scale=complexity,
         )
-        gen_btn = gr.Button("Generate", variant="primary")
+        images.append(img)
+    return images
 
-    output_image = gr.Image(
-        label="Generated silhouette",
-        type="numpy",
-        height=280,
-        image_mode="L",
+
+with gr.Blocks(title="Fashion Silhouette Generator") as demo:
+    gr.Markdown("# Fashion Silhouette Generator")
+    gr.Markdown(
+        "Explore the DCGAN latent space: **Seed** defines the starting design; "
+        "**Design Morph** interpolates between consecutive seeds; **Silhouette Complexity** scales the latent. "
+        "Generate 1–16 silhouettes at once."
     )
 
-    def run_generate(seed):
-        if seed is not None:
-            seed = int(seed)
-        return generate_image(seed=seed)
+    with gr.Row():
+        seed_input = gr.Slider(
+            minimum=0,
+            maximum=9999,
+            value=0,
+            step=1,
+            label="Seed",
+        )
+        num_images = gr.Number(
+            value=8,
+            label="Number of Silhouettes",
+            precision=0,
+            minimum=1,
+            maximum=16,
+        )
+    with gr.Row():
+        complexity_slider = gr.Slider(
+            minimum=0.5,
+            maximum=2.0,
+            value=1.0,
+            step=0.1,
+            label="Silhouette Complexity",
+        )
+        morph_slider = gr.Slider(
+            minimum=0.0,
+            maximum=1.0,
+            value=0.0,
+            step=0.01,
+            label="Design Morph (Interpolation)",
+        )
 
-    gen_btn.click(fn=run_generate, inputs=seed_input, outputs=output_image)
+    gen_btn = gr.Button("Generate", variant="primary")
 
-    # Generate one on load so the UI isn't empty
-    demo.load(fn=lambda: run_generate(None), inputs=[], outputs=output_image)
+    output_gallery = gr.Gallery(
+        label="Generated Silhouettes",
+        columns=4,
+        height=600,
+    )
+
+    gen_btn.click(
+        fn=run_generate,
+        inputs=[seed_input, morph_slider, complexity_slider, num_images],
+        outputs=output_gallery,
+    )
+
+    # Show a few images on load
+    demo.load(
+        fn=lambda: run_generate(0, 0.0, 1.0, 8),
+        inputs=[],
+        outputs=output_gallery,
+    )
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(theme=gr.themes.Soft())
