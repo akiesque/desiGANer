@@ -1,15 +1,28 @@
 """
 Gradio app for fashion silhouette generation with latent-space exploration.
-Supports morphing, complexity control, and generating 1–16 silhouettes in a grid.
+Shows generated silhouettes, training loss plot, FID score, and diversity score.
 Run from the fashion-gan directory: python app.py
 """
+
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 import gradio as gr
 
-from utils import generate_silhouette
+from utils import (
+    compute_diversity,
+    compute_fid,
+    ensure_real_images_fashion_mnist,
+    generate_silhouette,
+    get_generated_images_dir,
+    get_real_images_dir,
+    save_numpy_images_for_fid,
+)
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+TRAINING_LOSS_PLOT = SCRIPT_DIR / "training_loss.png"
 
 
 def generate_image(
@@ -19,8 +32,7 @@ def generate_image(
     scale: float = 1.0,
 ) -> np.ndarray:
     """
-    Generate one silhouette and return it as 256x256 numpy for display.
-    After converting from tensor to [0,255], resize with INTER_NEAREST so silhouettes stay sharp.
+    Generate one silhouette and return it as 64x64 numpy for display.
     """
     img_tensor = generate_silhouette(
         seed=seed,
@@ -32,20 +44,21 @@ def generate_image(
         img_tensor = img_tensor.squeeze().cpu().numpy()
     img = (img_tensor * 0.5 + 0.5) * 255
     img = np.clip(img, 0, 255).astype(np.uint8)
-    img = cv2.resize(img, (256, 256), interpolation=cv2.INTER_NEAREST)
+    img = cv2.resize(img, (64, 64), interpolation=cv2.INTER_NEAREST)
     return img
 
 
-def run_generate(
+def run_generate_with_metrics(
     seed: int | float | None,
     morph: float,
     complexity: float,
     num_images: int | float,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], str | None, float | None, float]:
     """
-    Generate num_images (1–16) silhouettes. Each image i uses seed_a=seed+i, seed_b=seed+i+1
-    with the same morph and complexity. Returns list of 256x256 images for the gallery.
+    Generate silhouettes and compute FID + diversity. Returns (images, loss_plot_path, fid_score, diversity_score).
     """
+    import torch
+
     seed = int(seed) if seed is not None else 0
     num_images = int(num_images)
     num_images = max(1, min(num_images, 16))
@@ -61,15 +74,32 @@ def run_generate(
             scale=complexity,
         )
         images.append(img)
-    return images
+
+    diversity_score = compute_diversity(np.array(images))
+
+    fid_score = None
+    try:
+        ensure_real_images_fashion_mnist(get_real_images_dir(), num_samples=500)
+        gen_dir = get_generated_images_dir()
+        save_numpy_images_for_fid(images, gen_dir)
+        fid_score = compute_fid(
+            gen_dir,
+            get_real_images_dir(),
+            cuda=torch.cuda.is_available(),
+        )
+    except Exception as e:
+        fid_score = None
+
+    loss_plot_path = str(TRAINING_LOSS_PLOT) if TRAINING_LOSS_PLOT.exists() else None
+
+    return (images, loss_plot_path, fid_score, diversity_score)
 
 
 with gr.Blocks(title="Fashion Silhouette Generator") as demo:
     gr.Markdown("# Fashion Silhouette Generator")
     gr.Markdown(
-        "Explore the DCGAN latent space: **Seed** defines the starting design; "
-        "**Design Morph** interpolates between consecutive seeds; **Silhouette Complexity** scales the latent. "
-        "Generate 1–16 silhouettes at once."
+        "Explore the DCGAN latent space: **Seed**, **Design Morph**, **Silhouette Complexity**. "
+        "Generate 1–16 silhouettes and see FID and diversity metrics."
     )
 
     with gr.Row():
@@ -110,18 +140,52 @@ with gr.Blocks(title="Fashion Silhouette Generator") as demo:
         columns=4,
         height=600,
     )
-
-    gen_btn.click(
-        fn=run_generate,
-        inputs=[seed_input, morph_slider, complexity_slider, num_images],
-        outputs=output_gallery,
+    loss_plot = gr.Image(
+        label="Training Loss Plot",
+        type="filepath",
+        height=300,
+    )
+    fid_number = gr.Number(
+        label="FID Score",
+        value=None,
+        precision=2,
+    )
+    diversity_number = gr.Number(
+        label="Diversity Score",
+        value=None,
+        precision=4,
     )
 
-    # Show a few images on load
+    def run_and_fill_metrics(seed, morph, complexity, num_images):
+        images, loss_path, fid, div = run_generate_with_metrics(
+            seed, morph, complexity, num_images
+        )
+        return (
+            images,
+            loss_path,
+            fid if fid is not None else 0.0,
+            div,
+        )
+
+    gen_btn.click(
+        fn=run_and_fill_metrics,
+        inputs=[seed_input, morph_slider, complexity_slider, num_images],
+        outputs=[output_gallery, loss_plot, fid_number, diversity_number],
+    )
+
+    def on_load():
+        images, loss_path, fid, div = run_generate_with_metrics(0, 0.0, 1.0, 8)
+        return (
+            images,
+            loss_path,
+            fid if fid is not None else 0.0,
+            div,
+        )
+
     demo.load(
-        fn=lambda: run_generate(0, 0.0, 1.0, 8),
+        fn=on_load,
         inputs=[],
-        outputs=output_gallery,
+        outputs=[output_gallery, loss_plot, fid_number, diversity_number],
     )
 
 

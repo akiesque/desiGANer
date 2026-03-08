@@ -1,11 +1,14 @@
 """
-Utilities for DCGAN: loading checkpoint, generating silhouettes, and latent-space exploration.
-All exploration is unsupervised (no labels); latent interpolation and scaling only.
+Utilities for DCGAN: loading checkpoint, generating silhouettes, latent-space exploration,
+and evaluation (FID, diversity). All exploration is unsupervised (no labels).
 """
 
 from pathlib import Path
 
+import numpy as np
 import torch
+from PIL import Image
+from scipy.spatial.distance import pdist
 
 from models import Generator
 
@@ -23,6 +26,138 @@ def get_checkpoints_dir() -> Path:
 def get_samples_dir() -> Path:
     """Directory where sample image grids are saved."""
     return _project_root() / "samples"
+
+
+def get_real_images_dir() -> Path:
+    """Directory for real Fashion-MNIST samples used in FID evaluation."""
+    return _project_root() / "real_images"
+
+
+def get_generated_images_dir() -> Path:
+    """Directory for generated samples used in FID evaluation."""
+    return _project_root() / "generated_images"
+
+
+# ---------------------------------------------------------------------------
+# Evaluation: FID and diversity (run after training or during evaluation)
+# ---------------------------------------------------------------------------
+
+# FID expects images Inception can process; we use 299x299 RGB for compatibility
+FID_IMAGE_SIZE = 299
+
+
+def compute_diversity(images: np.ndarray) -> float:
+    """
+    Diversity score: mean pairwise Euclidean distance over flattened images.
+    Higher = more diverse generated set. images shape: (N, H, W) or (N, H, W, C).
+    """
+    images = np.asarray(images, dtype=np.float64)
+    n = images.shape[0]
+    if n < 2:
+        return 0.0
+    images = images.reshape(n, -1)
+    return float(np.mean(pdist(images, metric="euclidean")))
+
+
+def compute_fid(
+    generated_dir: str | Path,
+    real_dir: str | Path,
+    cuda: bool = True,
+) -> float:
+    """
+    Fréchet Inception Distance between generated and real image folders.
+    Returns FID score (lower is better). Requires torch_fidelity.
+    """
+    from torch_fidelity import calculate_metrics
+
+    metrics = calculate_metrics(
+        input1=str(generated_dir),
+        input2=str(real_dir),
+        cuda=cuda,
+        fid=True,
+        isc=False,
+    )
+    return float(metrics["frechet_inception_distance"])
+
+
+def ensure_real_images_fashion_mnist(
+    real_dir: str | Path | None = None,
+    num_samples: int = 500,
+) -> Path:
+    """
+    Save Fashion-MNIST test images to real_dir as 299x299 RGB PNGs for FID.
+    Skips if real_dir already has enough images. Returns real_dir.
+    """
+    import torchvision.transforms as T
+    from torchvision.datasets import FashionMNIST
+
+    real_dir = Path(real_dir or get_real_images_dir())
+    real_dir.mkdir(parents=True, exist_ok=True)
+    existing = list(real_dir.glob("*.png"))
+    if len(existing) >= num_samples:
+        return real_dir
+
+    transform = T.Compose([
+        T.ToTensor(),
+        T.Normalize((0.5,), (0.5,)),
+        T.Resize((FID_IMAGE_SIZE, FID_IMAGE_SIZE)),
+        T.Lambda(lambda x: x.repeat(3, 1, 1)),  # grayscale -> RGB
+        T.Lambda(lambda x: (x * 0.5 + 0.5).clamp(0, 1)),
+        T.ToPILImage(),
+    ])
+    dataset = FashionMNIST(
+        root=str(_project_root() / "data"),
+        train=False,
+        download=True,
+        transform=transform,
+    )
+    for i in range(min(num_samples, len(dataset))):
+        img, _ = dataset[i]
+        img.save(real_dir / f"real_{i:05d}.png")
+    return real_dir
+
+
+def save_generated_for_fid(
+    images_tensor: torch.Tensor,
+    out_dir: str | Path,
+) -> Path:
+    """
+    Save generated images (tensor in [-1,1], shape NCHW) as 299x299 RGB PNGs in out_dir.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    x = images_tensor.cpu().float()
+    x = (x * 0.5 + 0.5).clamp(0, 1)
+    for i in range(x.shape[0]):
+        img = x[i].squeeze(0).numpy()
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+        pil = Image.fromarray(img)
+        if pil.size != (FID_IMAGE_SIZE, FID_IMAGE_SIZE):
+            pil = pil.resize((FID_IMAGE_SIZE, FID_IMAGE_SIZE), Image.Resampling.NEAREST)
+        pil.save(out_dir / f"gen_{i:05d}.png")
+    return out_dir
+
+
+def save_numpy_images_for_fid(images: list[np.ndarray], out_dir: str | Path) -> Path:
+    """
+    Save list of numpy images (H,W) or (H,W,1) uint8 as 299x299 RGB PNGs for FID.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for i, img in enumerate(images):
+        img = np.asarray(img)
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        elif img.ndim == 3 and img.shape[-1] == 1:
+            img = np.repeat(img, 3, axis=-1)
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        pil = Image.fromarray(img)
+        if pil.size != (FID_IMAGE_SIZE, FID_IMAGE_SIZE):
+            pil = pil.resize((FID_IMAGE_SIZE, FID_IMAGE_SIZE), Image.Resampling.NEAREST)
+        pil.save(out_dir / f"gen_{i:05d}.png")
+    return out_dir
 
 
 # ---------------------------------------------------------------------------

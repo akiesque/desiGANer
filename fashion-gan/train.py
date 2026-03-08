@@ -1,10 +1,14 @@
 """
 Train a DCGAN on Fashion-MNIST for generating fashion silhouettes.
 Run from the fashion-gan directory: python train.py
+Tracks G/D loss, saves training_loss.png, and optionally runs FID/diversity evaluation.
 """
 
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -73,6 +77,10 @@ def train():
     # Fixed noise for consistent sample grids every epoch
     fixed_noise = torch.randn(64, LATENT_DIM, device=DEVICE)
 
+    # Store loss per epoch for plotting (training stability)
+    g_losses = []
+    d_losses = []
+
     for epoch in range(1, NUM_EPOCHS + 1):
         g_loss_epoch = 0.0
         d_loss_epoch = 0.0
@@ -118,6 +126,8 @@ def train():
 
         g_loss_epoch /= num_batches
         d_loss_epoch /= num_batches
+        g_losses.append(g_loss_epoch)
+        d_losses.append(d_loss_epoch)
 
         print(f"Epoch [{epoch}/{NUM_EPOCHS}]  D_loss: {d_loss_epoch:.4f}  G_loss: {g_loss_epoch:.4f}")
 
@@ -142,6 +152,56 @@ def train():
     best_path = CHECKPOINTS_DIR / "generator_best.pt"
     torch.save(generator.state_dict(), best_path)
     print(f"  Saved deployment model -> {best_path.name}")
+
+    # Plot and save training loss (epoch vs loss)
+    loss_plot_path = SCRIPT_DIR / "training_loss.png"
+    plt.figure(figsize=(8, 5))
+    plt.plot(g_losses, label="Generator Loss")
+    plt.plot(d_losses, label="Discriminator Loss")
+    plt.legend()
+    plt.title("DCGAN Training Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved training loss plot -> {loss_plot_path.name}")
+
+    # Optional: run FID and diversity evaluation (saves real_images/ and generated_images/)
+    fid, div = None, None
+    try:
+        from utils import (
+            ensure_real_images_fashion_mnist,
+            get_generated_images_dir,
+            get_real_images_dir,
+            save_generated_for_fid,
+            compute_fid,
+            compute_diversity,
+        )
+        real_dir = ensure_real_images_fashion_mnist(get_real_images_dir(), num_samples=500)
+        generator.eval()
+        with torch.no_grad():
+            z_eval = torch.randn(64, LATENT_DIM, device=DEVICE)
+            fake_eval = generator(z_eval)
+        save_generated_for_fid(fake_eval, get_generated_images_dir())
+        fid = compute_fid(get_generated_images_dir(), real_dir, cuda=torch.cuda.is_available())
+        div = compute_diversity(fake_eval.cpu().numpy())
+        print(f"  FID Score: {fid:.2f}  Diversity Score: {div:.4f}")
+    except Exception as e:
+        print(f"  Evaluation skipped: {e}")
+
+    # Write metrics to a .txt file
+    metrics_path = SCRIPT_DIR / "training_metrics.txt"
+    with open(metrics_path, "w") as f:
+        f.write("DCGAN Training Metrics\n")
+        f.write("=====================\n")
+        f.write(f"Epochs: {NUM_EPOCHS}\n")
+        f.write(f"Final Generator Loss: {g_losses[-1]:.4f}\n")
+        f.write(f"Final Discriminator Loss: {d_losses[-1]:.4f}\n")
+        if fid is not None:
+            f.write(f"FID Score: {fid:.4f}\n")
+        if div is not None:
+            f.write(f"Diversity Score: {div:.4f}\n")
+    print(f"  Saved metrics -> {metrics_path.name}")
 
     print("Training complete.")
 

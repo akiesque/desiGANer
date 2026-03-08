@@ -5,6 +5,9 @@ fashion-gan/samples/*.png
 # Ignore per-epoch checkpoints; keep generator_best.pt for deployment
 fashion-gan/checkpoints/generator_epoch_*.pt
 fashion-gan/checkpoints/discriminator_*.pt
+# Evaluation image folders (recreated by app/training)
+fashion-gan/real_images/*.png
+fashion-gan/generated_images/*.png
 
 # Virtual environments
 .venv
