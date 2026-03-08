@@ -2,7 +2,9 @@
 __pycache__/
 data/
 fashion-gan/samples/*.png
-fashion-gan/checkpoints/*.pt
+# Ignore per-epoch checkpoints; keep generator_best.pt for deployment
+fashion-gan/checkpoints/generator_epoch_*.pt
+fashion-gan/checkpoints/discriminator_*.pt
 
 # Virtual environments
 .venv

@@ -3,7 +3,7 @@ name = "desiganer"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "gradio>=6.8.0",
     "kaggle>=2.0.0",
@@ -16,3 +16,12 @@ dependencies = [
     "torchaudio>=2.10.0",
     "torchvision>=0.25.0",
 ]
+
+[tool.uv]
+# Use copy instead of hardlinks (avoids warning when cache and venv are on different filesystems)
+link-mode = "copy"
+# Optional: use PyTorch CUDA index so torch can be resolved from here.
+# To actually use GPU, after `uv sync` run:
+#   uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# (Use cu121 or cu118 if your nvidia-smi CUDA version differs.)
+extra-index-url = ["https://download.pytorch.org/whl/cu124"]

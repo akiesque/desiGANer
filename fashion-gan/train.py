@@ -22,13 +22,14 @@ IMAGE_SIZE = 28
 LATENT_DIM = 100
 LR = 0.0002
 BETAS = (0.5, 0.999)
-NUM_EPOCHS = 50  # Adjust as needed; more epochs = better quality
+NUM_EPOCHS = 50 
 
 # Paths relative to this script (fashion-gan/train.py)
 SCRIPT_DIR = Path(__file__).resolve().parent
 SAMPLES_DIR = SCRIPT_DIR / "samples"
 CHECKPOINTS_DIR = SCRIPT_DIR / "checkpoints"
 
+print(f"Using device: {DEVICE}")
 
 def get_dataloader():
     """
@@ -136,6 +137,11 @@ def train():
         torch.save(generator.state_dict(), ckpt_g)
         torch.save(discriminator.state_dict(), ckpt_d)
         print(f"  Saved checkpoints -> {ckpt_g.name}, {ckpt_d.name}")
+
+    # Save one generator for deployment (not gitignored; commit this so the app works live)
+    best_path = CHECKPOINTS_DIR / "generator_best.pt"
+    torch.save(generator.state_dict(), best_path)
+    print(f"  Saved deployment model -> {best_path.name}")
 
     print("Training complete.")
 
