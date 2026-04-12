@@ -17,6 +17,7 @@ class Generator(nn.Module):
         self.latent_dim = latent_dim
         # Project latent vector to spatial feature map: 100 -> 128*7*7, then reshape to (128, 7, 7)
         self.fc = nn.Linear(latent_dim, ngf * 7 * 7)
+        self.bn_fc = nn.BatchNorm1d(ngf * 7 * 7)
         self.reshape_size = (ngf, 7, 7)
 
         # Upsample 7x7 -> 14x14 -> 28x28 using transposed convolutions
@@ -33,5 +34,6 @@ class Generator(nn.Module):
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         # z: (batch, latent_dim)
         x = self.fc(z)
+        x = self.bn_fc(x)
         x = x.view(-1, *self.reshape_size)
         return self.conv_blocks(x)

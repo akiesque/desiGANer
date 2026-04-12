@@ -90,21 +90,22 @@ def train():
             real_imgs = real_imgs.to(DEVICE)
             batch_len = real_imgs.size(0)
 
-            # BCE targets: 1 = real, 0 = fake
-            real_labels = torch.ones(batch_len, 1, device=DEVICE)
-            fake_labels = torch.zeros(batch_len, 1, device=DEVICE)
+            # Discriminator BCE targets with label smoothing; generator still uses hard 1.0 for fakes-as-real
+            d_real_labels = torch.full((batch_len, 1), 0.9, device=DEVICE)
+            d_fake_labels = torch.full((batch_len, 1), 0.1, device=DEVICE)
+            g_fake_labels = torch.ones(batch_len, 1, device=DEVICE)
 
             # --- Step 1: Train Discriminator on real images (maximize log D(real)) ---
             opt_d.zero_grad()
             pred_real = discriminator(real_imgs)
-            loss_d_real = criterion(pred_real, real_labels)
+            loss_d_real = criterion(pred_real, d_real_labels)
             loss_d_real.backward()
 
             # --- Step 2 & 3: Generate fakes and train Discriminator on fakes (maximize log(1 - D(G(z)))) ---
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z).detach()  # no grad through G
             pred_fake = discriminator(fake_imgs)
-            loss_d_fake = criterion(pred_fake, fake_labels)
+            loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake.backward()
             opt_d.step()
 
@@ -112,17 +113,18 @@ def train():
             d_loss_epoch += d_loss
             num_batches += 1
 
-            # --- Step 4: Train Generator to fool Discriminator (minimize log(1 - D(G(z))) or maximize log D(G(z))) ---
-            opt_g.zero_grad()
-            z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
-            fake_imgs = generator(z)
-            pred_fake = discriminator(fake_imgs)
-            # We use real_labels so G tries to make D output 1 for fakes (BCE with target 1)
-            loss_g = criterion(pred_fake, real_labels)
-            loss_g.backward()
-            opt_g.step()
-
-            g_loss_epoch += loss_g.item()
+            # --- Step 4: Train Generator twice per D step (non-saturating BCE vs 1.0) ---
+            g_loss_batch = 0.0
+            for _ in range(2):
+                opt_g.zero_grad()
+                z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
+                fake_imgs = generator(z)
+                pred_fake = discriminator(fake_imgs)
+                loss_g = criterion(pred_fake, g_fake_labels)
+                loss_g.backward()
+                opt_g.step()
+                g_loss_batch += loss_g.item()
+            g_loss_epoch += g_loss_batch / 2.0
 
         g_loss_epoch /= num_batches
         d_loss_epoch /= num_batches
