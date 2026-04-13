@@ -107,12 +107,14 @@ def train():
             opt_d.zero_grad()
             pred_real = discriminator(real_imgs)
             loss_d_real = criterion(pred_real, d_real_labels)
+            loss_d_real = criterion(pred_real, d_real_labels)
             loss_d_real.backward()
 
             # --- Step 2 & 3: Generate fakes and train Discriminator on fakes (maximize log(1 - D(G(z)))) ---
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z).detach()  # no grad through G
             pred_fake = discriminator(fake_imgs)
+            loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake.backward()
             opt_d.step()

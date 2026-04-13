@@ -13,6 +13,7 @@ class Discriminator(nn.Module):
     """
 
     def __init__(self, ndf: int = 32, dropout: float = 0.3):
+    def __init__(self, ndf: int = 32, dropout: float = 0.3):
         super().__init__()
         # 28 -> 14 -> 7 -> 3 (with kernel 4, stride 2, padding 1)
         self.conv_blocks = nn.Sequential(
@@ -30,7 +31,7 @@ class Discriminator(nn.Module):
             nn.BatchNorm2d(ndf * 8),
             nn.LeakyReLU(0.2),
         )
-        # Flatten: 256 * 3 * 3 = 2304 -> 1
+        # Flatten: (ndf*4) * 3 * 3 -> 1
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(ndf * 8 * 4 * 4, 1),

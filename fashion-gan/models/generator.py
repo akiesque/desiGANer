@@ -39,5 +39,6 @@ class Generator(nn.Module):
         # z: (batch, latent_dim)
         x = self.fc(z)
         x = self.bn_fc(x)
+        x = self.bn_fc(x)
         x = x.view(-1, *self.reshape_size)
         return self.conv_blocks(x)
