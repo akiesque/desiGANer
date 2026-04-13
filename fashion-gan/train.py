@@ -22,11 +22,14 @@ from utils import get_checkpoints_dir, get_samples_dir
 # ---------------------------------------------------------------------------
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 128
-IMAGE_SIZE = 28
+IMAGE_SIZE = 64
 LATENT_DIM = 100
-LR = 0.0002
+LR_G = 0.0002
+LR_D = 0.00003
 BETAS = (0.5, 0.999)
-NUM_EPOCHS = 50 
+NUM_EPOCHS = 200
+# Legacy combined-loss patience (unused). Early stop uses G loss only: see train loop.
+EARLY_STOPPING_PATIENCE = None
 
 # Paths relative to this script (fashion-gan/train.py)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -41,8 +44,11 @@ def get_dataloader():
     Images are 28x28 grayscale; ToTensor() gives [0,1], we map to [-1,1] to match Generator Tanh output.
     """
     transform = transforms.Compose([
+        transforms.Resize(64),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=(0.5,), std=(0.5,)),  # [0,1] -> [-1, 1]
+        transforms.Normalize(mean=(0.5,), std=(0.5,)),
     ])
     dataset = datasets.FashionMNIST(
         root=str(SCRIPT_DIR / "data"),
@@ -70,9 +76,9 @@ def train():
     generator = Generator(latent_dim=LATENT_DIM).to(DEVICE)
     discriminator = Discriminator().to(DEVICE)
 
-    criterion = nn.BCELoss()
-    opt_g = torch.optim.Adam(generator.parameters(), lr=LR, betas=BETAS)
-    opt_d = torch.optim.Adam(discriminator.parameters(), lr=LR, betas=BETAS)
+    criterion = nn.BCEWithLogitsLoss()
+    opt_g = torch.optim.Adam(generator.parameters(), lr=LR_G, betas=BETAS)
+    opt_d = torch.optim.Adam(discriminator.parameters(), lr=LR_D, betas=BETAS)
 
     # Fixed noise for consistent sample grids every epoch
     fixed_noise = torch.randn(64, LATENT_DIM, device=DEVICE)
@@ -80,6 +86,9 @@ def train():
     # Store loss per epoch for plotting (training stability)
     g_losses = []
     d_losses = []
+    best_g_loss = float("inf")
+    best_generator_state = None
+    g_loss_high_streak = 0
 
     for epoch in range(1, NUM_EPOCHS + 1):
         g_loss_epoch = 0.0
@@ -90,21 +99,21 @@ def train():
             real_imgs = real_imgs.to(DEVICE)
             batch_len = real_imgs.size(0)
 
-            # BCE targets: 1 = real, 0 = fake
-            real_labels = torch.ones(batch_len, 1, device=DEVICE)
-            fake_labels = torch.zeros(batch_len, 1, device=DEVICE)
+            d_real_labels = torch.full((batch_len, 1), 0.9, device=DEVICE)
+            d_fake_labels = torch.zeros(batch_len, 1, device=DEVICE)
+            g_fake_labels = torch.ones(batch_len, 1, device=DEVICE)
 
             # --- Step 1: Train Discriminator on real images (maximize log D(real)) ---
             opt_d.zero_grad()
             pred_real = discriminator(real_imgs)
-            loss_d_real = criterion(pred_real, real_labels)
+            loss_d_real = criterion(pred_real, d_real_labels)
             loss_d_real.backward()
 
             # --- Step 2 & 3: Generate fakes and train Discriminator on fakes (maximize log(1 - D(G(z)))) ---
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z).detach()  # no grad through G
             pred_fake = discriminator(fake_imgs)
-            loss_d_fake = criterion(pred_fake, fake_labels)
+            loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake.backward()
             opt_d.step()
 
@@ -117,8 +126,7 @@ def train():
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z)
             pred_fake = discriminator(fake_imgs)
-            # We use real_labels so G tries to make D output 1 for fakes (BCE with target 1)
-            loss_g = criterion(pred_fake, real_labels)
+            loss_g = criterion(pred_fake, g_fake_labels)
             loss_g.backward()
             opt_g.step()
 
@@ -128,6 +136,15 @@ def train():
         d_loss_epoch /= num_batches
         g_losses.append(g_loss_epoch)
         d_losses.append(d_loss_epoch)
+
+        if g_loss_epoch < best_g_loss:
+            best_g_loss = g_loss_epoch
+            best_generator_state = {k: v.detach().cpu().clone() for k, v in generator.state_dict().items()}
+
+        if g_loss_epoch > 1.5:
+            g_loss_high_streak += 1
+        else:
+            g_loss_high_streak = 0
 
         print(f"Epoch [{epoch}/{NUM_EPOCHS}]  D_loss: {d_loss_epoch:.4f}  G_loss: {g_loss_epoch:.4f}")
 
@@ -147,6 +164,14 @@ def train():
         torch.save(generator.state_dict(), ckpt_g)
         torch.save(discriminator.state_dict(), ckpt_d)
         print(f"  Saved checkpoints -> {ckpt_g.name}, {ckpt_d.name}")
+
+        if g_loss_high_streak >= 20:
+            print("  Early stopping: G loss > 1.5 for 20 consecutive epochs.")
+            break
+
+    if best_generator_state is not None:
+        generator.load_state_dict(best_generator_state)
+        print(f"  Restored generator to best G loss ({best_g_loss:.4f}).")
 
     # Save one generator for deployment (not gitignored; commit this so the app works live)
     best_path = CHECKPOINTS_DIR / "generator_best.pt"
@@ -177,10 +202,10 @@ def train():
             compute_fid,
             compute_diversity,
         )
-        real_dir = ensure_real_images_fashion_mnist(get_real_images_dir(), num_samples=500)
+        real_dir = ensure_real_images_fashion_mnist(get_real_images_dir(), num_samples=2000)
         generator.eval()
         with torch.no_grad():
-            z_eval = torch.randn(64, LATENT_DIM, device=DEVICE)
+            z_eval = torch.randn(2000, LATENT_DIM, device=DEVICE)
             fake_eval = generator(z_eval)
         save_generated_for_fid(fake_eval, get_generated_images_dir())
         fid = compute_fid(get_generated_images_dir(), real_dir, cuda=torch.cuda.is_available())
@@ -194,7 +219,7 @@ def train():
     with open(metrics_path, "w") as f:
         f.write("DCGAN Training Metrics\n")
         f.write("=====================\n")
-        f.write(f"Epochs: {NUM_EPOCHS}\n")
+        f.write(f"Epochs: {len(g_losses)}\n")
         f.write(f"Final Generator Loss: {g_losses[-1]:.4f}\n")
         f.write(f"Final Discriminator Loss: {d_losses[-1]:.4f}\n")
         if fid is not None:
