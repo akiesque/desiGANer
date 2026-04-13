@@ -1,7 +1,7 @@
 DCGAN Training Metrics
 =====================
-Epochs: 50
-Final Generator Loss: 6.1522
-Final Discriminator Loss: 0.1191
-FID Score: 397.8951
-Diversity Score: 22.3346
+Epochs: 130
+Final Generator Loss: 1.7136
+Final Discriminator Loss: 0.8136
+FID Score: 412.6424
+Diversity Score: 49.9650

@@ -13,28 +13,28 @@ class Discriminator(nn.Module):
     """
 
     def __init__(self, ndf: int = 32, dropout: float = 0.3):
+    def __init__(self, ndf: int = 32, dropout: float = 0.3):
         super().__init__()
         # 28 -> 14 -> 7 -> 3 (with kernel 4, stride 2, padding 1)
         self.conv_blocks = nn.Sequential(
-            # (batch, 1, 28, 28) -> (batch, ndf, 14, 14)
             nn.Conv2d(1, ndf, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2),
-            # (batch, ndf, 14, 14) -> (batch, ndf*2, 7, 7)
             nn.Conv2d(ndf, ndf * 2, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(ndf * 2),
             nn.LeakyReLU(0.2),
             nn.Dropout2d(dropout),
-            # (batch, ndf*2, 7, 7) -> (batch, ndf*4, 3, 3)
             nn.Conv2d(ndf * 2, ndf * 4, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(ndf * 4),
             nn.LeakyReLU(0.2),
             nn.Dropout2d(dropout),
+            nn.Conv2d(ndf * 4, ndf * 8, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(ndf * 8),
+            nn.LeakyReLU(0.2),
         )
         # Flatten: (ndf*4) * 3 * 3 -> 1
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(ndf * 4 * 3 * 3, 1),
-            nn.Sigmoid(),
+            nn.Linear(ndf * 8 * 4 * 4, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
