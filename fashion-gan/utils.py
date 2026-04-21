@@ -38,6 +38,12 @@ def get_generated_images_dir() -> Path:
     return _project_root() / "generated_images"
 
 
+def _clear_pngs(directory: Path) -> None:
+    """Remove stale PNG files so each FID run uses a clean image set."""
+    for png in directory.glob("*.png"):
+        png.unlink()
+
+
 # ---------------------------------------------------------------------------
 # Evaluation: FID and diversity (run after training or during evaluation)
 # ---------------------------------------------------------------------------
@@ -126,6 +132,7 @@ def save_generated_for_fid(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _clear_pngs(out_dir)
     x = images_tensor.cpu().float()
     x = (x * 0.5 + 0.5).clamp(0, 1)
     for i in range(x.shape[0]):
@@ -146,6 +153,7 @@ def save_numpy_images_for_fid(images: list[np.ndarray], out_dir: str | Path) -> 
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _clear_pngs(out_dir)
     for i, img in enumerate(images):
         img = np.asarray(img)
         if img.ndim == 2:
@@ -230,12 +238,16 @@ def _load_generator(
             raise FileNotFoundError(
                 f"No checkpoints directory at {ckpt_dir}. Train the model first with: python train.py"
             )
-        candidates = list(ckpt_dir.glob("generator*.pt")) or list(ckpt_dir.glob("*.pt"))
-        if not candidates:
-            raise FileNotFoundError(
-                f"No checkpoint files found in {ckpt_dir}. Train the model first."
-            )
-        checkpoint_path = max(candidates, key=lambda p: p.stat().st_mtime)
+        best_path = ckpt_dir / "generator_best.pt"
+        if best_path.is_file():
+            checkpoint_path = best_path
+        else:
+            candidates = list(ckpt_dir.glob("generator*.pt")) or list(ckpt_dir.glob("*.pt"))
+            if not candidates:
+                raise FileNotFoundError(
+                    f"No checkpoint files found in {ckpt_dir}. Train the model first."
+                )
+            checkpoint_path = max(candidates, key=lambda p: p.stat().st_mtime)
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")

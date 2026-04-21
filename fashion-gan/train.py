@@ -25,7 +25,7 @@ BATCH_SIZE = 128
 IMAGE_SIZE = 64
 LATENT_DIM = 100
 LR_G = 0.0002
-LR_D = 0.00003
+LR_D = 0.0001
 BETAS = (0.5, 0.999)
 NUM_EPOCHS = 200
 # Legacy combined-loss patience (unused). Early stop uses G loss only: see train loop.
@@ -38,6 +38,65 @@ CHECKPOINTS_DIR = SCRIPT_DIR / "checkpoints"
 
 print(f"Using device: {DEVICE}")
 
+
+def record_epoch_losses(
+    generator_losses: list[float],
+    discriminator_losses: list[float],
+    generator_loss: float,
+    discriminator_loss: float,
+) -> None:
+    """
+    Record one epoch of Generator/Discriminator losses for later plotting.
+    """
+    generator_losses.append(generator_loss)
+    discriminator_losses.append(discriminator_loss)
+
+
+def save_loss_plots(
+    generator_losses: list[float],
+    discriminator_losses: list[float],
+) -> None:
+    """
+    Save combined and separate loss plots after training.
+    """
+    # Combined loss plot (existing behavior retained)
+    combined_path = SCRIPT_DIR / "training_loss.png"
+    plt.figure(figsize=(8, 5))
+    plt.plot(generator_losses, label="Generator Loss")
+    plt.plot(discriminator_losses, label="Discriminator Loss")
+    plt.legend()
+    plt.title("DCGAN Training Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.savefig(combined_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved training loss plot -> {combined_path.name}")
+
+    # Separate generator-only plot
+    generator_path = SCRIPT_DIR / "generator_loss.png"
+    plt.figure(figsize=(8, 5))
+    plt.plot(generator_losses, color="tab:blue", label="Generator Loss")
+    plt.legend()
+    plt.title("Generator Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.savefig(generator_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved generator loss plot -> {generator_path.name}")
+
+    # Separate discriminator-only plot
+    discriminator_path = SCRIPT_DIR / "discriminator_loss.png"
+    plt.figure(figsize=(8, 5))
+    plt.plot(discriminator_losses, color="tab:orange", label="Discriminator Loss")
+    plt.legend()
+    plt.title("Discriminator Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.savefig(discriminator_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved discriminator loss plot -> {discriminator_path.name}")
+
+
 def get_dataloader():
     """
     Load Fashion-MNIST with torchvision (auto-download), normalize to [-1, 1], batch size 128.
@@ -45,8 +104,6 @@ def get_dataloader():
     """
     transform = transforms.Compose([
         transforms.Resize(64),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.5,), std=(0.5,)),
     ])
@@ -107,14 +164,12 @@ def train():
             opt_d.zero_grad()
             pred_real = discriminator(real_imgs)
             loss_d_real = criterion(pred_real, d_real_labels)
-            loss_d_real = criterion(pred_real, d_real_labels)
             loss_d_real.backward()
 
             # --- Step 2 & 3: Generate fakes and train Discriminator on fakes (maximize log(1 - D(G(z)))) ---
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z).detach()  # no grad through G
             pred_fake = discriminator(fake_imgs)
-            loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake.backward()
             opt_d.step()
@@ -136,8 +191,7 @@ def train():
 
         g_loss_epoch /= num_batches
         d_loss_epoch /= num_batches
-        g_losses.append(g_loss_epoch)
-        d_losses.append(d_loss_epoch)
+        record_epoch_losses(g_losses, d_losses, g_loss_epoch, d_loss_epoch)
 
         if g_loss_epoch < best_g_loss:
             best_g_loss = g_loss_epoch
@@ -180,18 +234,8 @@ def train():
     torch.save(generator.state_dict(), best_path)
     print(f"  Saved deployment model -> {best_path.name}")
 
-    # Plot and save training loss (epoch vs loss)
-    loss_plot_path = SCRIPT_DIR / "training_loss.png"
-    plt.figure(figsize=(8, 5))
-    plt.plot(g_losses, label="Generator Loss")
-    plt.plot(d_losses, label="Discriminator Loss")
-    plt.legend()
-    plt.title("DCGAN Training Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  Saved training loss plot -> {loss_plot_path.name}")
+    # Plot and save loss curves (combined + separate)
+    save_loss_plots(g_losses, d_losses)
 
     # Optional: run FID and diversity evaluation (saves real_images/ and generated_images/)
     fid, div = None, None

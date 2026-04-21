@@ -23,6 +23,14 @@ from utils import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TRAINING_LOSS_PLOT = SCRIPT_DIR / "training_loss.png"
+CHECKPOINTS_DIR = SCRIPT_DIR / "checkpoints"
+BEST_GENERATOR_CKPT = CHECKPOINTS_DIR / "generator_best.pt"
+FID_REAL_SAMPLES = 1000
+FID_EVAL_SAMPLES = 1000
+FID_MODE_SETTINGS: dict[str, tuple[int, int]] = {
+    "Fast": (500, 200),
+    "Accurate": (1000, 1000),
+}
 
 
 def generate_image(
@@ -30,11 +38,13 @@ def generate_image(
     seed_b: int | None = None,
     alpha: float | None = None,
     scale: float = 1.0,
+    checkpoint_path: str | Path | None = None,
 ) -> np.ndarray:
     """
     Generate one silhouette and return it as 64x64 numpy for display.
     """
     img_tensor = generate_silhouette(
+        checkpoint_path=checkpoint_path,
         seed=seed,
         seed_b=seed_b,
         alpha=alpha,
@@ -53,6 +63,7 @@ def run_generate_with_metrics(
     morph: float,
     complexity: float,
     num_images: int | float,
+    fid_mode: str = "Fast",
 ) -> tuple[list[np.ndarray], str | None, float | None, float]:
     """
     Generate silhouettes and compute FID + diversity. Returns (images, loss_plot_path, fid_score, diversity_score).
@@ -62,12 +73,15 @@ def run_generate_with_metrics(
     seed = int(seed) if seed is not None else 0
     num_images = int(num_images)
     num_images = max(1, min(num_images, 16))
+    checkpoint_path = BEST_GENERATOR_CKPT if BEST_GENERATOR_CKPT.exists() else None
+    real_samples, eval_samples = FID_MODE_SETTINGS.get(fid_mode, FID_MODE_SETTINGS["Fast"])
 
     images = []
     for i in range(num_images):
         current_seed = seed + i
         seed_b = current_seed + 1
         img = generate_image(
+            checkpoint_path=checkpoint_path,
             seed=current_seed,
             seed_b=seed_b,
             alpha=morph,
@@ -79,15 +93,27 @@ def run_generate_with_metrics(
 
     fid_score = None
     try:
-        ensure_real_images_fashion_mnist(get_real_images_dir(), num_samples=500)
+        ensure_real_images_fashion_mnist(get_real_images_dir(), num_samples=real_samples)
         gen_dir = get_generated_images_dir()
-        save_numpy_images_for_fid(images, gen_dir)
+        fid_images = []
+        for i in range(eval_samples):
+            current_seed = seed + 100_000 + i
+            fid_images.append(
+                generate_image(
+                    checkpoint_path=checkpoint_path,
+                    seed=current_seed,
+                    seed_b=current_seed + 1,
+                    alpha=morph,
+                    scale=complexity,
+                )
+            )
+        save_numpy_images_for_fid(fid_images, gen_dir)
         fid_score = compute_fid(
             gen_dir,
             get_real_images_dir(),
             cuda=torch.cuda.is_available(),
         )
-    except Exception as e:
+    except Exception:
         fid_score = None
 
     loss_plot_path = str(TRAINING_LOSS_PLOT) if TRAINING_LOSS_PLOT.exists() else None
@@ -132,6 +158,12 @@ with gr.Blocks(title="Fashion Silhouette Generator") as demo:
             step=0.01,
             label="Design Morph (Interpolation)",
         )
+        fid_mode_input = gr.Radio(
+            choices=["Fast", "Accurate"],
+            value="Fast",
+            label="FID Evaluation Mode",
+            info="Fast: quicker but noisier. Accurate: slower but more stable.",
+        )
 
     gen_btn = gr.Button("Generate", variant="primary")
 
@@ -156,9 +188,9 @@ with gr.Blocks(title="Fashion Silhouette Generator") as demo:
         precision=4,
     )
 
-    def run_and_fill_metrics(seed, morph, complexity, num_images):
+    def run_and_fill_metrics(seed, morph, complexity, num_images, fid_mode):
         images, loss_path, fid, div = run_generate_with_metrics(
-            seed, morph, complexity, num_images
+            seed, morph, complexity, num_images, fid_mode
         )
         return (
             images,
@@ -169,12 +201,12 @@ with gr.Blocks(title="Fashion Silhouette Generator") as demo:
 
     gen_btn.click(
         fn=run_and_fill_metrics,
-        inputs=[seed_input, morph_slider, complexity_slider, num_images],
+        inputs=[seed_input, morph_slider, complexity_slider, num_images, fid_mode_input],
         outputs=[output_gallery, loss_plot, fid_number, diversity_number],
     )
 
     def on_load():
-        images, loss_path, fid, div = run_generate_with_metrics(0, 0.0, 1.0, 8)
+        images, loss_path, fid, div = run_generate_with_metrics(0, 0.0, 1.0, 8, "Fast")
         return (
             images,
             loss_path,

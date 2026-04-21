@@ -13,7 +13,6 @@ class Discriminator(nn.Module):
     """
 
     def __init__(self, ndf: int = 32, dropout: float = 0.3):
-    def __init__(self, ndf: int = 32, dropout: float = 0.3):
         super().__init__()
         # 28 -> 14 -> 7 -> 3 (with kernel 4, stride 2, padding 1)
         self.conv_blocks = nn.Sequential(
