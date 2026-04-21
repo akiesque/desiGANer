@@ -63,9 +63,9 @@ def _apply_graphic_silhouette_cv(image: np.ndarray) -> np.ndarray:
     """
     inverted = cv2.bitwise_not(image)
     denoised = cv2.bilateralFilter(inverted, d=5, sigmaColor=25, sigmaSpace=25)
-    blurred = cv2.GaussianBlur(denoised, (0, 0), 1.1)
-    sharpened = cv2.addWeighted(denoised, 1.8, blurred, -0.8, 0)
-    edges = cv2.Laplacian(sharpened, cv2.CV_16S, ksize=3)
+    blurred = cv2.GaussianBlur(denoised, (0, 0), 0.5)
+    sharpened = cv2.addWeighted(denoised, 1.5, blurred, -0.5, 0)
+    edges = cv2.Laplacian(sharpened, cv2.CV_16S, ksize=1)
     edges = cv2.convertScaleAbs(edges)
     return cv2.addWeighted(sharpened, 1.0, edges, 0.25, 0)
 
@@ -209,18 +209,18 @@ with gr.Blocks(title="Fashion Silhouette Generator") as demo:
             )
             gen_btn = gr.Button("Generate", variant="primary")
             with gr.Row():
-                fid_number = gr.Number(
-                    label="FID Score",
-                    value=None,
-                    precision=2,
-                    scale=0,
-                )
-                diversity_number = gr.Number(
-                    label="Diversity Score",
-                    value=None,
-                    precision=4,
-                    scale=0,
-                )
+                with gr.Column(scale=1, min_width=220):
+                    fid_number = gr.Number(
+                        label="FID Score",
+                        value=None,
+                        precision=2,
+                    )
+                with gr.Column(scale=1, min_width=220):
+                    diversity_number = gr.Number(
+                        label="Diversity Score",
+                        value=None,
+                        precision=4,
+                    )
 
     loss_plot = gr.Image(
         label="Training Loss Plot",

@@ -6,8 +6,9 @@ fashion-gan/samples/*.png
 fashion-gan/checkpoints/generator_epoch_*.pt
 fashion-gan/checkpoints/discriminator_*.pt
 # Evaluation image folders (recreated by app/training)
-fashion-gan/real_images/*.png
+./real_images/*.png
 fashion-gan/generated_images/*.png
+/fashion-gan/real_images/
 
 # Virtual environments
 .venv
