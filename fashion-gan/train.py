@@ -28,8 +28,10 @@ LR_G = 0.0002
 LR_D = 0.0001
 BETAS = (0.5, 0.999)
 NUM_EPOCHS = 200
-# Legacy combined-loss patience (unused). Early stop uses G loss only: see train loop.
-EARLY_STOPPING_PATIENCE = None
+G_LOSS_EARLY_STOP_THRESHOLD = 3.0
+# Instance noise injected into D inputs; decays linearly to 0 by epoch INSTANCE_NOISE_DECAY_EPOCH
+INSTANCE_NOISE_STD = 0.1
+INSTANCE_NOISE_DECAY_EPOCH = 50
 
 # Paths relative to this script (fashion-gan/train.py)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -104,6 +106,8 @@ def get_dataloader():
     """
     transform = transforms.Compose([
         transforms.Resize(64),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.5,), std=(0.5,)),
     ])
@@ -152,6 +156,9 @@ def train():
         d_loss_epoch = 0.0
         num_batches = 0
 
+        # Instance noise std decays linearly from INSTANCE_NOISE_STD to 0 by INSTANCE_NOISE_DECAY_EPOCH
+        noise_std = max(0.0, INSTANCE_NOISE_STD * (1.0 - epoch / INSTANCE_NOISE_DECAY_EPOCH))
+
         for batch_idx, (real_imgs, _) in enumerate(dataloader):
             real_imgs = real_imgs.to(DEVICE)
             batch_len = real_imgs.size(0)
@@ -160,16 +167,17 @@ def train():
             d_fake_labels = torch.zeros(batch_len, 1, device=DEVICE)
             g_fake_labels = torch.ones(batch_len, 1, device=DEVICE)
 
-            # --- Step 1: Train Discriminator on real images (maximize log D(real)) ---
+            # --- Train Discriminator (every batch) ---
             opt_d.zero_grad()
-            pred_real = discriminator(real_imgs)
+            real_d = (real_imgs + noise_std * torch.randn_like(real_imgs)).clamp(-1.0, 1.0)
+            pred_real = discriminator(real_d)
             loss_d_real = criterion(pred_real, d_real_labels)
             loss_d_real.backward()
 
-            # --- Step 2 & 3: Generate fakes and train Discriminator on fakes (maximize log(1 - D(G(z)))) ---
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z).detach()  # no grad through G
-            pred_fake = discriminator(fake_imgs)
+            fake_d = (fake_imgs + noise_std * torch.randn_like(fake_imgs)).clamp(-1.0, 1.0)
+            pred_fake = discriminator(fake_d)
             loss_d_fake = criterion(pred_fake, d_fake_labels)
             loss_d_fake.backward()
             opt_d.step()
@@ -178,7 +186,7 @@ def train():
             d_loss_epoch += d_loss
             num_batches += 1
 
-            # --- Step 4: Train Generator to fool Discriminator (minimize log(1 - D(G(z))) or maximize log D(G(z))) ---
+            # --- Train Generator (every batch, one step, clean fakes — no noise) ---
             opt_g.zero_grad()
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z)
@@ -197,7 +205,7 @@ def train():
             best_g_loss = g_loss_epoch
             best_generator_state = {k: v.detach().cpu().clone() for k, v in generator.state_dict().items()}
 
-        if g_loss_epoch > 1.5:
+        if g_loss_epoch > G_LOSS_EARLY_STOP_THRESHOLD:
             g_loss_high_streak += 1
         else:
             g_loss_high_streak = 0
