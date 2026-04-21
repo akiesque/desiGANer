@@ -28,10 +28,12 @@ LR_G = 0.0002
 LR_D = 0.0001
 BETAS = (0.5, 0.999)
 NUM_EPOCHS = 200
-G_LOSS_EARLY_STOP_THRESHOLD = 3.0
+G_LOSS_EARLY_STOP_THRESHOLD = 5.0
 # Instance noise injected into D inputs; decays linearly to 0 by epoch INSTANCE_NOISE_DECAY_EPOCH
 INSTANCE_NOISE_STD = 0.1
-INSTANCE_NOISE_DECAY_EPOCH = 50
+INSTANCE_NOISE_DECAY_EPOCH = 150
+# Best-checkpoint tracking skips the first N epochs so early unstable minima are ignored
+BEST_CHECKPOINT_WARMUP_EPOCHS = 20
 
 # Paths relative to this script (fashion-gan/train.py)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -186,22 +188,24 @@ def train():
             d_loss_epoch += d_loss
             num_batches += 1
 
-            # --- Train Generator (every batch, one step, clean fakes — no noise) ---
-            opt_g.zero_grad()
-            z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
-            fake_imgs = generator(z)
-            pred_fake = discriminator(fake_imgs)
-            loss_g = criterion(pred_fake, g_fake_labels)
-            loss_g.backward()
-            opt_g.step()
-
-            g_loss_epoch += loss_g.item()
+            # --- Train Generator (every batch, 2 steps, clean fakes — no noise) ---
+            g_loss_batch = 0.0
+            for _ in range(2):
+                opt_g.zero_grad()
+                z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
+                fake_imgs = generator(z)
+                pred_fake = discriminator(fake_imgs)
+                loss_g = criterion(pred_fake, g_fake_labels)
+                loss_g.backward()
+                opt_g.step()
+                g_loss_batch += loss_g.item()
+            g_loss_epoch += g_loss_batch / 2.0
 
         g_loss_epoch /= num_batches
         d_loss_epoch /= num_batches
         record_epoch_losses(g_losses, d_losses, g_loss_epoch, d_loss_epoch)
 
-        if g_loss_epoch < best_g_loss:
+        if epoch > BEST_CHECKPOINT_WARMUP_EPOCHS and g_loss_epoch < best_g_loss:
             best_g_loss = g_loss_epoch
             best_generator_state = {k: v.detach().cpu().clone() for k, v in generator.state_dict().items()}
 
@@ -230,7 +234,7 @@ def train():
         print(f"  Saved checkpoints -> {ckpt_g.name}, {ckpt_d.name}")
 
         if g_loss_high_streak >= 20:
-            print("  Early stopping: G loss > 1.5 for 20 consecutive epochs.")
+            print(f"  Early stopping: G loss > {G_LOSS_EARLY_STOP_THRESHOLD} for 20 consecutive epochs.")
             break
 
     if best_generator_state is not None:
