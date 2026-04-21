@@ -11,7 +11,6 @@ class Discriminator(nn.Module):
     """
     Discriminator: (1, 28, 28) -> Conv layers (stride) -> LeakyReLU / Dropout -> Flatten -> Linear -> Sigmoid -> scalar.
     """
-
     def __init__(self, ndf: int = 32, dropout: float = 0.3):
         super().__init__()
         # 28 -> 14 -> 7 -> 3 (with kernel 4, stride 2, padding 1)
