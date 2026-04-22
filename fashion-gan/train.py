@@ -18,7 +18,7 @@ from models import Generator, Discriminator
 from utils import get_checkpoints_dir, get_samples_dir
 
 # ---------------------------------------------------------------------------
-# Configuration (batch 128, 28x28, BCE, Adam lr=0.0002, betas=(0.5, 0.999))
+# Configuration (batch 128, 64x64, Hinge loss, Adam; G lr=2e-4, D lr=1e-4, betas=(0.5, 0.999))
 # ---------------------------------------------------------------------------
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 128
@@ -28,8 +28,15 @@ LR_G = 0.0002
 LR_D = 0.0001
 BETAS = (0.5, 0.999)
 NUM_EPOCHS = 200
-# Legacy combined-loss patience (unused). Early stop uses G loss only: see train loop.
-EARLY_STOPPING_PATIENCE = None
+G_LOSS_EARLY_STOP_THRESHOLD = 5.0
+# Instance noise injected into D inputs; decays linearly to 0 by epoch INSTANCE_NOISE_DECAY_EPOCH
+INSTANCE_NOISE_STD = 0.1
+INSTANCE_NOISE_DECAY_EPOCH = 150
+# Best-checkpoint tracking skips the first N epochs so early unstable minima are ignored
+BEST_CHECKPOINT_WARMUP_EPOCHS = 20
+# LR decay: after LR_DECAY_START_EPOCH, both LRs decay linearly to LR_DECAY_END_FACTOR * original by NUM_EPOCHS
+LR_DECAY_START_EPOCH = 100
+LR_DECAY_END_FACTOR = 0.1
 
 # Paths relative to this script (fashion-gan/train.py)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -104,6 +111,8 @@ def get_dataloader():
     """
     transform = transforms.Compose([
         transforms.Resize(64),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.5,), std=(0.5,)),
     ])
@@ -133,7 +142,7 @@ def train():
     generator = Generator(latent_dim=LATENT_DIM).to(DEVICE)
     discriminator = Discriminator().to(DEVICE)
 
-    criterion = nn.BCEWithLogitsLoss()
+    # Hinge loss: D trained with max(0, 1 - pred_real) + max(0, 1 + pred_fake); G trained with -mean(pred_fake)
     opt_g = torch.optim.Adam(generator.parameters(), lr=LR_G, betas=BETAS)
     opt_d = torch.optim.Adam(discriminator.parameters(), lr=LR_D, betas=BETAS)
 
@@ -152,52 +161,64 @@ def train():
         d_loss_epoch = 0.0
         num_batches = 0
 
+        # Instance noise std decays linearly from INSTANCE_NOISE_STD to 0 by INSTANCE_NOISE_DECAY_EPOCH
+        noise_std = max(0.0, INSTANCE_NOISE_STD * (1.0 - epoch / INSTANCE_NOISE_DECAY_EPOCH))
+
+        # Linear LR decay: after LR_DECAY_START_EPOCH, scale both LRs toward LR_DECAY_END_FACTOR * original
+        if epoch > LR_DECAY_START_EPOCH:
+            decay_progress = (epoch - LR_DECAY_START_EPOCH) / (NUM_EPOCHS - LR_DECAY_START_EPOCH)
+            lr_scale = 1.0 - (1.0 - LR_DECAY_END_FACTOR) * decay_progress
+            for pg in opt_g.param_groups:
+                pg["lr"] = LR_G * lr_scale
+            for pg in opt_d.param_groups:
+                pg["lr"] = LR_D * lr_scale
+
         for batch_idx, (real_imgs, _) in enumerate(dataloader):
             real_imgs = real_imgs.to(DEVICE)
             batch_len = real_imgs.size(0)
 
-            d_real_labels = torch.full((batch_len, 1), 0.9, device=DEVICE)
-            d_fake_labels = torch.zeros(batch_len, 1, device=DEVICE)
-            g_fake_labels = torch.ones(batch_len, 1, device=DEVICE)
-
-            # --- Step 1: Train Discriminator on real images (maximize log D(real)) ---
+            # --- Train Discriminator — Hinge loss: D real ≥ 1, D fake ≤ -1 ---
             opt_d.zero_grad()
-            pred_real = discriminator(real_imgs)
-            loss_d_real = criterion(pred_real, d_real_labels)
-            loss_d_real.backward()
+            real_d = (real_imgs + noise_std * torch.randn_like(real_imgs)).clamp(-1.0, 1.0)
+            pred_real = discriminator(real_d)
+            loss_d_real = torch.mean(torch.relu(1.0 - pred_real))
 
-            # --- Step 2 & 3: Generate fakes and train Discriminator on fakes (maximize log(1 - D(G(z)))) ---
             z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
             fake_imgs = generator(z).detach()  # no grad through G
-            pred_fake = discriminator(fake_imgs)
-            loss_d_fake = criterion(pred_fake, d_fake_labels)
-            loss_d_fake.backward()
+            fake_d = (fake_imgs + noise_std * torch.randn_like(fake_imgs)).clamp(-1.0, 1.0)
+            pred_fake = discriminator(fake_d)
+            loss_d_fake = torch.mean(torch.relu(1.0 + pred_fake))
+
+            loss_d = loss_d_real + loss_d_fake
+            loss_d.backward()
             opt_d.step()
 
-            d_loss = loss_d_real.item() + loss_d_fake.item()
-            d_loss_epoch += d_loss
+            d_loss_epoch += loss_d.item()
             num_batches += 1
 
-            # --- Step 4: Train Generator to fool Discriminator (minimize log(1 - D(G(z))) or maximize log D(G(z))) ---
-            opt_g.zero_grad()
-            z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
-            fake_imgs = generator(z)
-            pred_fake = discriminator(fake_imgs)
-            loss_g = criterion(pred_fake, g_fake_labels)
-            loss_g.backward()
-            opt_g.step()
-
-            g_loss_epoch += loss_g.item()
+            # --- Train Generator (every batch, 2 steps, clean fakes — no noise) ---
+            # Hinge loss for G: maximize D output on fakes → minimize -mean(D(G(z)))
+            g_loss_batch = 0.0
+            for _ in range(2):
+                opt_g.zero_grad()
+                z = torch.randn(batch_len, LATENT_DIM, device=DEVICE)
+                fake_imgs = generator(z)
+                pred_fake = discriminator(fake_imgs)
+                loss_g = -torch.mean(pred_fake)
+                loss_g.backward()
+                opt_g.step()
+                g_loss_batch += loss_g.item()
+            g_loss_epoch += g_loss_batch / 2.0
 
         g_loss_epoch /= num_batches
         d_loss_epoch /= num_batches
         record_epoch_losses(g_losses, d_losses, g_loss_epoch, d_loss_epoch)
 
-        if g_loss_epoch < best_g_loss:
+        if epoch > BEST_CHECKPOINT_WARMUP_EPOCHS and g_loss_epoch < best_g_loss:
             best_g_loss = g_loss_epoch
             best_generator_state = {k: v.detach().cpu().clone() for k, v in generator.state_dict().items()}
 
-        if g_loss_epoch > 1.5:
+        if g_loss_epoch > G_LOSS_EARLY_STOP_THRESHOLD:
             g_loss_high_streak += 1
         else:
             g_loss_high_streak = 0
@@ -222,7 +243,7 @@ def train():
         print(f"  Saved checkpoints -> {ckpt_g.name}, {ckpt_d.name}")
 
         if g_loss_high_streak >= 20:
-            print("  Early stopping: G loss > 1.5 for 20 consecutive epochs.")
+            print(f"  Early stopping: G loss > {G_LOSS_EARLY_STOP_THRESHOLD} for 20 consecutive epochs.")
             break
 
     if best_generator_state is not None:
