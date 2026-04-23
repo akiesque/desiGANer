@@ -31,12 +31,12 @@ NUM_EPOCHS = 200
 G_LOSS_EARLY_STOP_THRESHOLD = 5.0
 # Instance noise injected into D inputs; decays linearly to 0 by epoch INSTANCE_NOISE_DECAY_EPOCH
 INSTANCE_NOISE_STD = 0.1
-INSTANCE_NOISE_DECAY_EPOCH = 150
+INSTANCE_NOISE_DECAY_EPOCH = 100
 # Best-checkpoint tracking skips the first N epochs so early unstable minima are ignored
 BEST_CHECKPOINT_WARMUP_EPOCHS = 20
 # LR decay: after LR_DECAY_START_EPOCH, both LRs decay linearly to LR_DECAY_END_FACTOR * original by NUM_EPOCHS
-LR_DECAY_START_EPOCH = 100
-LR_DECAY_END_FACTOR = 0.1
+LR_DECAY_START_EPOCH = 150
+LR_DECAY_END_FACTOR = 0.5
 
 # Paths relative to this script (fashion-gan/train.py)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -148,7 +148,6 @@ def train():
 
     # Fixed noise for consistent sample grids every epoch
     fixed_noise = torch.randn(64, LATENT_DIM, device=DEVICE)
-
     # Store loss per epoch for plotting (training stability)
     g_losses = []
     d_losses = []
