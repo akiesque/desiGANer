@@ -74,7 +74,7 @@ def compute_fid(
     Fréchet Inception Distance between generated and real image folders.
     Returns FID score (lower is better). Requires torch_fidelity.
     """
-    from torch_fidelity import calculate_metrics
+    from torch_fidelity import KEY_METRIC_FID, calculate_metrics
 
     metrics = calculate_metrics(
         input1=str(generated_dir),
@@ -82,8 +82,10 @@ def compute_fid(
         cuda=cuda,
         fid=True,
         isc=False,
+        # DataLoader workers + Windows/Gradio can raise obscure KeyError("__main__"); single-threaded I/O is fine here.
+        save_cpu_ram=True,
     )
-    return float(metrics["frechet_inception_distance"])
+    return float(metrics[KEY_METRIC_FID])
 
 
 def ensure_real_images_fashion_mnist(
@@ -223,15 +225,49 @@ def latent_from_seed(
     return torch.randn(1, latent_dim, device=device)
 
 
+# Separate module instances per checkpoint file (no weight sharing). Key includes mtime so
+# re-saved files reload correctly.
+_generator_cache: dict[tuple[str, str, int], Generator] = {}
+
+
+def _state_dict_from_checkpoint_file(checkpoint_path: Path) -> dict:
+    data = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    if isinstance(data, dict) and "model_state_dict" in data:
+        return data["model_state_dict"]
+    if isinstance(data, dict) and "fc.weight" in data:
+        return data
+    raise ValueError(f"Unrecognized checkpoint format: {checkpoint_path}")
+
+
+def infer_generator_shape_from_state(state: dict) -> tuple[int, int]:
+    """
+    Returns (latent_dim, ngf) from a flat generator state_dict.
+    """
+    w = state.get("fc.weight")
+    if w is None or w.dim() != 2:
+        raise KeyError("State dict must contain fc.weight to infer model width.")
+    out_features, latent_dim = w.shape[0], w.shape[1]
+    if out_features % 16 != 0:
+        raise ValueError(
+            f"fc.weight out_features {out_features} is not a multiple of 16; cannot infer ngf."
+        )
+    return latent_dim, out_features // 16
+
+
+def clear_generator_cache() -> None:
+    """Drop cached generator modules (e.g. after replacing checkpoint files on disk)."""
+    _generator_cache.clear()
+
+
 def _load_generator(
     checkpoint_path: str | Path | None = None,
     device: torch.device | None = None,
     latent_dim: int = 100,
+    use_cache: bool = True,
 ) -> Generator:
-    """Load trained generator from checkpoint; used by generate_from_latent and generate_silhouette."""
+    """Build a fresh module graph from the checkpoint, inferring ngf from weights (supports multiple sizes)."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    generator = Generator(latent_dim=latent_dim)
     if checkpoint_path is None:
         ckpt_dir = get_checkpoints_dir()
         if not ckpt_dir.exists():
@@ -248,15 +284,25 @@ def _load_generator(
                     f"No checkpoint files found in {ckpt_dir}. Train the model first."
                 )
             checkpoint_path = max(candidates, key=lambda p: p.stat().st_mtime)
-    checkpoint_path = Path(checkpoint_path)
+    checkpoint_path = Path(checkpoint_path).resolve()
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    state = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    if isinstance(state, dict) and "model_state_dict" in state:
-        generator.load_state_dict(state["model_state_dict"])
-    else:
-        generator.load_state_dict(state)
+    mtime_ns = int(checkpoint_path.stat().st_mtime_ns)
+    cache_key = (str(checkpoint_path), str(device), mtime_ns)
+    if use_cache and cache_key in _generator_cache:
+        return _generator_cache[cache_key]
+
+    state = _state_dict_from_checkpoint_file(checkpoint_path)
+    inferred_latent, ngf = infer_generator_shape_from_state(state)
+    if inferred_latent != latent_dim:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} expects latent_dim={inferred_latent}, got {latent_dim}."
+        )
+    generator = Generator(latent_dim=latent_dim, ngf=ngf)
+    generator.load_state_dict(state, strict=True)
     generator = generator.to(device).eval()
+    if use_cache:
+        _generator_cache[cache_key] = generator
     return generator
 
 
@@ -265,6 +311,7 @@ def generate_from_latent(
     checkpoint_path: str | Path | None = None,
     device: torch.device | None = None,
     latent_dim: int = 100,
+    use_cache: bool = True,
 ) -> torch.Tensor:
     """
     Load the trained generator and produce an image from the given latent vector.
@@ -282,7 +329,10 @@ def generate_from_latent(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = _load_generator(
-        checkpoint_path=checkpoint_path, device=device, latent_dim=latent_dim
+        checkpoint_path=checkpoint_path,
+        device=device,
+        latent_dim=latent_dim,
+        use_cache=use_cache,
     )
     with torch.no_grad():
         z = z.to(device)
@@ -297,6 +347,7 @@ def generate_silhouette(
     seed_b: int | None = None,
     alpha: float | None = None,
     scale: float = 1.0,
+    use_cache: bool = True,
 ) -> torch.Tensor:
     """
     Generate one silhouette, with optional latent interpolation and complexity scaling.
@@ -343,5 +394,9 @@ def generate_silhouette(
             z = torch.randn(1, latent_dim, device=device)
     z = scale_latent(z, scale)
     return generate_from_latent(
-        z, checkpoint_path=checkpoint_path, device=device, latent_dim=latent_dim
+        z,
+        checkpoint_path=checkpoint_path,
+        device=device,
+        latent_dim=latent_dim,
+        use_cache=use_cache,
     )

@@ -15,12 +15,12 @@ class Generator(nn.Module):
     def __init__(self, latent_dim: int = 100, ngf: int = 128):
         super().__init__()
         self.latent_dim = latent_dim
-        # Project latent vector to spatial feature map: 100 -> 128*7*7, then reshape to (128, 7, 7)
+        self.ngf = ngf
+        # Project latent to (ngf, 4, 4) before upsampling; ngf may differ per checkpoint.
         self.fc = nn.Linear(latent_dim, ngf * 4 * 4)
         self.bn_fc = nn.BatchNorm1d(ngf * 4 * 4)
         self.reshape_size = (ngf, 4, 4)
 
-        # Upsample 7x7 -> 14x14 -> 28x28 using transposed convolutions
         self.conv_blocks = nn.Sequential(
             nn.ConvTranspose2d(ngf, ngf, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(ngf),
