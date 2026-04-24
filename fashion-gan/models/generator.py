@@ -12,7 +12,7 @@ class Generator(nn.Module):
     Generator: z (latent 100) -> FC -> reshape -> ConvTranspose2d blocks (BatchNorm + ReLU) -> Tanh -> (1, 28, 28).
     """
 
-    def __init__(self, latent_dim: int = 100, ngf: int = 256):
+    def __init__(self, latent_dim: int = 100, ngf: int = 128):
         super().__init__()
         self.latent_dim = latent_dim
         # Project latent vector to spatial feature map: 100 -> 128*7*7, then reshape to (128, 7, 7)
